@@ -1,0 +1,17 @@
+{
+  "name": "grader-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node test/run.mjs"
+  },
+  "dependencies": {
+    "cfb": "^1.2.2",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

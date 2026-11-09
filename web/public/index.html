@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>시험 자동 채점기</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --mute:#667085; --line:#e4e7ec; --pri:#1f3864; --ok:#e2f0d9; --bad:#f8d7da; --part:#fff2cc; --rev:#fce4d6; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,"Malgun Gothic",sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:980px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--mute); margin:0 0 20px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  .drop { border:2px dashed var(--line); border-radius:8px; padding:18px; text-align:center; color:var(--mute); cursor:pointer; }
+  .drop.over { border-color:var(--pri); background:#eef2fa; }
+  .files { margin-top:8px; color:var(--mute); font-size:13px; word-break:break-all; }
+  input[type=password] { padding:8px 10px; border:1px solid var(--line); border-radius:6px; width:240px; }
+  button { background:var(--pri); color:#fff; border:0; border-radius:6px; padding:9px 16px; font-size:15px; cursor:pointer; }
+  button.sec { background:#fff; color:var(--pri); border:1px solid var(--pri); }
+  button:disabled { opacity:.5; cursor:default; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #status { color:var(--mute); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th,td { padding:7px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { background:var(--pri); color:#fff; font-weight:600; }
+  tr.row { cursor:pointer; } tr.row:hover { background:#f0f3f9; }
+  .num { text-align:center; white-space:nowrap; }
+  .warn { color:#b54708; font-size:13px; }
+  .s-correct { background:var(--ok); } .s-wrong { background:var(--bad); } .s-partial { background:var(--part); } .s-blank { background:#ededed; } .s-review { background:var(--rev); }
+  .note { font-size:13px; color:var(--mute); margin-top:8px; }
+  .err { color:#b42318; }
+  #detail:empty { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>시험 자동 채점기</h1>
+  <p class="sub">정답지와 학생 시험지(한글·PDF·이미지)를 올리면 자동으로 채점합니다.</p>
+
+  <section>
+    <h2>1. 비밀번호</h2>
+    <input type="password" id="pw" placeholder="접속 비밀번호" autocomplete="current-password">
+  </section>
+
+  <section>
+    <h2>2. 정답지</h2>
+    <div class="drop" id="dropKey">클릭하거나 파일을 끌어다 놓으세요 (hwp · hwpx · pdf · jpg · png)</div>
+    <input type="file" id="fileKey" hidden accept=".hwp,.hwpx,.pdf,.jpg,.jpeg,.png,.gif,.webp,.bmp">
+    <div class="files" id="keyName">선택 안 됨</div>
+  </section>
+
+  <section>
+    <h2>3. 학생 시험지 (여러 개 가능)</h2>
+    <div class="drop" id="dropStu">클릭하거나 파일을 끌어다 놓으세요</div>
+    <input type="file" id="fileStu" hidden multiple accept=".hwp,.hwpx,.pdf,.jpg,.jpeg,.png,.gif,.webp,.bmp">
+    <div class="files" id="stuNames">선택 안 됨</div>
+  </section>
+
+  <div class="bar" style="margin-bottom:14px">
+    <button id="run">▶ 채점 시작</button>
+    <button id="csv" class="sec" disabled>결과 내려받기 (CSV)</button>
+    <span id="status">대기 중</span>
+  </div>
+
+  <section id="resultCard" hidden>
+    <h2>결과 <span class="note">(행을 누르면 문항별 상세)</span></h2>
+    <table id="tbl"><thead><tr><th>파일</th><th>이름</th><th>학번</th><th class="num">점수</th><th>확인 필요</th></tr></thead><tbody></tbody></table>
+    <div id="detail" style="margin-top:14px"></div>
+  </section>
+
+  <p class="note">학생 이름·학번 등 시험지 내용은 채점을 위해 Claude(Anthropic API)로 전송됩니다. 서버에는 저장하지 않습니다.</p>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const KO = { correct:"정답", wrong:"오답", partial:"부분점수", blank:"무응답", review:"확인필요" };
+let keyFile = null, stuFiles = [], results = [], questions = null, running = false;
+
+$("pw").value = sessionStorage.getItem("pw") || "";
+$("pw").addEventListener("input", (e) => sessionStorage.setItem("pw", e.target.value));
+
+function wireDrop(dropId, inputId, onFiles) {
+  const d = $(dropId), i = $(inputId);
+  d.onclick = () => i.click();
+  i.onchange = () => { onFiles([...i.files]); i.value = ""; };
+  d.ondragover = (e) => { e.preventDefault(); d.classList.add("over"); };
+  d.ondragleave = () => d.classList.remove("over");
+  d.ondrop = (e) => { e.preventDefault(); d.classList.remove("over"); onFiles([...e.dataTransfer.files]); };
+}
+wireDrop("dropKey", "fileKey", (fs) => { keyFile = fs[0] || null; questions = null; $("keyName").textContent = keyFile ? keyFile.name : "선택 안 됨"; });
+wireDrop("dropStu", "fileStu", (fs) => { stuFiles = fs; $("stuNames").textContent = fs.length ? `${fs.length}개: ` + fs.map((f) => f.name).join(", ") : "선택 안 됨"; });
+
+// 이미지는 긴 변 1800px JPEG로 줄여서 전송 (속도·용량 절약, BMP 등도 변환)
+async function prepare(file) {
+  const ext = file.name.split(".").pop().toLowerCase();
+  if (!["jpg","jpeg","png","gif","webp","bmp"].includes(ext)) return file;
+  const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const s = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
+  const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height);
+  const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.9));
+  return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+}
+
+async function api(path, fields) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  const r = await fetch(path, { method: "POST", headers: { "x-app-password": $("pw").value }, body: fd });
+  const data = await r.json().catch(() => ({ error: `서버 응답 오류 (${r.status})` }));
+  if (!r.ok) throw new Error(data.error || `오류 ${r.status}`);
+  return data;
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
+
+function addRow(r, idx) {
+  $("resultCard").hidden = false;
+  const tr = document.createElement("tr");
+  tr.className = "row";
+  tr.innerHTML = `<td>${esc(r.file)}</td><td>${esc(r.name)}</td><td>${esc(r.student_id)}</td><td class="num"><b>${r.total}</b> / ${r.max_total}</td><td class="warn">${esc((r.warnings || []).join(" | "))}</td>`;
+  tr.onclick = () => showDetail(idx);
+  $("tbl").tBodies[0].appendChild(tr);
+}
+
+function showDetail(i) {
+  const r = results[i];
+  $("detail").innerHTML = `<b>${esc(r.file)}</b> — ${esc(r.name)} ${esc(r.student_id)} (${r.total}/${r.max_total}점)
+  <table style="margin-top:8px"><thead><tr><th>문항</th><th>학생 답</th><th>정답</th><th class="num">득점</th><th>결과</th><th>코멘트</th></tr></thead><tbody>` +
+  r.results.map((q) => `<tr><td>${esc(q.no)}</td><td>${esc(q.student_answer)}</td><td>${esc(q.correct_answer)}</td><td class="num">${q.earned}/${q.points}</td><td class="s-${q.status}">${KO[q.status] || q.status}</td><td>${esc(q.comment)}</td></tr>`).join("") + "</tbody></table>";
+}
+
+$("run").onclick = async () => {
+  if (running) return;
+  if (!$("pw").value) return alert("비밀번호를 입력하세요.");
+  if (!keyFile || !stuFiles.length) return alert("정답지와 학생 시험지를 먼저 선택하세요.");
+  running = true; $("run").disabled = true; $("csv").disabled = true;
+  results = []; $("tbl").tBodies[0].innerHTML = ""; $("detail").innerHTML = "";
+  try {
+    $("status").textContent = "정답지 읽는 중…";
+    questions = (await api("/api/key", { file: await prepare(keyFile) })).questions;
+    const total = questions.reduce((a, q) => a + q.points, 0);
+    $("status").textContent = `정답지 ${questions.length}문항 인식 (총 ${total}점)`;
+    for (let i = 0; i < stuFiles.length; i++) {
+      $("status").textContent = `[${i + 1}/${stuFiles.length}] ${stuFiles[i].name} 채점 중…`;
+      let r;
+      try { r = await api("/api/student", { file: await prepare(stuFiles[i]), questions: JSON.stringify(questions) }); }
+      catch (e) {
+        if (/비밀번호/.test(e.message)) throw e;
+        r = { file: stuFiles[i].name, name: "", student_id: "", total: 0, max_total: total, results: [], warnings: ["처리 실패: " + e.message] };
+      }
+      results.push(r); addRow(r, results.length - 1);
+    }
+    $("status").textContent = `완료: ${results.length}명 채점`;
+    $("csv").disabled = false;
+  } catch (e) {
+    $("status").innerHTML = `<span class="err">오류: ${esc(e.message)}</span>`;
+  } finally { running = false; $("run").disabled = false; }
+};
+
+$("csv").onclick = () => {
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  // 엑셀 수식 주입 방지: = + - @ 로 시작하는 학생 입력은 앞에 ' 를 붙임
+  const safe = (v) => /^[=+\-@\t\r]/.test(String(v ?? "")) ? "'" + v : v;
+  const rows = [["파일","이름","학번","문항","학생 답","정답","득점","배점","결과","코멘트","총점","만점"]];
+  for (const r of results) {
+    if (!r.results.length) rows.push([r.file, r.name, r.student_id, "", "", "", "", "", "", (r.warnings||[]).join(" | "), r.total, r.max_total]);
+    for (const x of r.results) rows.push([r.file, r.name, r.student_id, x.no, x.student_answer, x.correct_answer, x.earned, x.points, KO[x.status] || x.status, x.comment, r.total, r.max_total]);
+  }
+  const csv = "﻿" + rows.map((row) => row.map((v) => q(safe(v))).join(",")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  a.download = "채점결과.csv"; a.click(); URL.revokeObjectURL(a.href);
+};
+</script>
+</body>
+</html>
